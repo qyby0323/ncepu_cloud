@@ -1,0 +1,123 @@
+QWidget {
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #e7ecf7;
+  background: #111827;
+}
+
+QMainWindow, QDialog {
+  background: #0f172a;
+}
+
+QFrame#Sidebar {
+  background: #111827;
+  border-right: 1px solid #334155;
+}
+
+QLabel#Logo {
+  color: #7ea1ff;
+  font-size: 28px;
+  font-weight: 700;
+  padding: 18px 0;
+}
+
+QPushButton#NavButton {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 4px;
+  color: #a8b3cf;
+  background: transparent;
+}
+
+QPushButton#NavButton:hover {
+  color: #ffffff;
+  background: #1e293b;
+}
+
+QLabel#AppTitle, QLabel#PageTitle, QLabel#LoginTitle {
+  font-weight: 800;
+  color: #f8fbff;
+}
+
+QLabel#PageTitle {
+  font-size: 24px;
+}
+
+QLabel#LoginTitle {
+  font-size: 34px;
+}
+
+QFrame#LoginPanel {
+  background: #172033;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+QLabel#MutedText {
+  color: #a8b3cf;
+}
+
+QWidget#Card {
+  background: #172033;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+QLabel#MetricValue {
+  font-size: 28px;
+  font-weight: 800;
+  color: #8ea7ff;
+}
+
+QPushButton {
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #1e293b;
+}
+
+QPushButton:hover {
+  background: #263449;
+}
+
+QPushButton#PrimaryButton {
+  color: white;
+  background: #5b7cff;
+  border-color: #5b7cff;
+}
+
+QPushButton#SettingsButton {
+  padding: 8px 16px;
+}
+
+QPushButton#ModeButton {
+  min-width: 72px;
+  color: #a8b3cf;
+  background: #1e293b;
+}
+
+QPushButton#ModeButton:checked {
+  color: #ffffff;
+  background: #5b7cff;
+  border-color: #5b7cff;
+}
+
+QLineEdit, QComboBox, QTextEdit, QSpinBox {
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px;
+  background: #172033;
+}
+
+QTableWidget {
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+QHeaderView::section {
+  background: #172033;
+  border: none;
+  padding: 8px;
+  color: #a8b3cf;
+}

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ncepu-cloud-client"
+version = "0.1.0"
+description = "NCEPU Cloud Client desktop app"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "NCEPU Cloud Client Team" }]
+
+[project.scripts]
+ncepu-cloud = "ncepu_cloud_client.cli.commands:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+

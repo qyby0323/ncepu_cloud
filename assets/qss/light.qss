@@ -1,0 +1,147 @@
+QWidget {
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #101936;
+  background: #ffffff;
+}
+
+QMainWindow, QDialog {
+  background: #f8fafc;
+}
+
+QFrame#Sidebar {
+  background: #f3f7ff;
+  border-right: 1px solid #e2e8f0;
+}
+
+QLabel#Logo {
+  color: #2f5fff;
+  font-size: 28px;
+  font-weight: 700;
+  padding: 18px 0;
+}
+
+QPushButton#NavButton {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 4px;
+  color: #57627a;
+  background: transparent;
+}
+
+QPushButton#NavButton:hover {
+  color: #2f5fff;
+  background: #eaf0ff;
+}
+
+QLabel#AppTitle {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111a3a;
+}
+
+QLabel#PageTitle {
+  font-size: 24px;
+  font-weight: 700;
+  padding: 8px 0;
+}
+
+QLabel#LoginTitle {
+  font-size: 34px;
+  font-weight: 800;
+  color: #111a3a;
+}
+
+QFrame#LoginPanel {
+  background: #ffffff;
+  border: 1px solid #e7ebf2;
+  border-radius: 8px;
+}
+
+QLabel#MutedText {
+  color: #667085;
+}
+
+QWidget#Card {
+  background: #ffffff;
+  border: 1px solid #e7ebf2;
+  border-radius: 8px;
+}
+
+QLabel#CardTitle {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+QLabel#MetricValue {
+  font-size: 28px;
+  font-weight: 800;
+  color: #2f5fff;
+}
+
+QPushButton {
+  border: 1px solid #dce2ee;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #ffffff;
+}
+
+QPushButton:hover {
+  background: #f3f7ff;
+  border-color: #b7c7ff;
+}
+
+QPushButton#PrimaryButton {
+  color: #ffffff;
+  background: #2d355c;
+  border-color: #2d355c;
+}
+
+QPushButton#SettingsButton {
+  padding: 8px 16px;
+}
+
+QPushButton#ModeButton {
+  min-width: 72px;
+  color: #59627a;
+  background: #ffffff;
+}
+
+QPushButton#ModeButton:checked {
+  color: #ffffff;
+  background: #2f5fff;
+  border-color: #2f5fff;
+}
+
+QLineEdit, QComboBox, QTextEdit, QSpinBox {
+  border: 1px solid #dce2ee;
+  border-radius: 8px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+QTableWidget {
+  background: #ffffff;
+  border: 1px solid #e7ebf2;
+  border-radius: 8px;
+  gridline-color: #eef2f7;
+}
+
+QHeaderView::section {
+  background: #f6f8fc;
+  border: none;
+  padding: 8px;
+  color: #667085;
+}
+
+QProgressBar {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f1f5f9;
+  text-align: center;
+}
+
+QProgressBar::chunk {
+  border-radius: 6px;
+  background: #2f5fff;
+}

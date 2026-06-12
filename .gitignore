@@ -1,0 +1,47 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+hdyp/
+
+# Build and packaging outputs
+dist/
+build/*
+!build/.gitkeep
+*.spec
+*.egg-info/
+
+# Local runtime data, logs, and secrets
+*.log
+*.db
+state.db
+token*.json
+config.toml
+.env
+.env.*
+
+# Raw API/reference bundles, not needed for running the project
+RESTfulAPI.zip
+RESTfulAPI/
+.api_docs_extracted/
+官方客户端/
+
+# Course/agent source materials, not needed for the runnable project
+prompt.md
+AGENTS.md
+操作系统课程设计题目 - 华电云盘 .pptx
+docs/
+# Build outputs
+build/
+dist/
+

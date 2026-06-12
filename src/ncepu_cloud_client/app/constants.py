@@ -1,0 +1,8 @@
+APP_NAME = "NCEPUCloudClient"
+APP_DISPLAY_NAME = "华电云盘客户端"
+ORG_NAME = "NCEPU"
+LEGACY_BASE_URL = "https://cloud.ncepu.edu.cn"
+LEGACY_AUTH_URL = "https://cloud.ncepu.edu.cn"
+DEFAULT_BASE_URL = "https://pan.ncepu.edu.cn"
+DEFAULT_AUTH_URL = "https://pan.ncepu.edu.cn"
+DEFAULT_REDIRECT_URI = "http://127.0.0.1:8765/callback"
