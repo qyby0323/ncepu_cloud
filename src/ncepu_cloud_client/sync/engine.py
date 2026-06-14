@@ -16,7 +16,7 @@ logger = get_logger("sync.engine")
 
 
 class SyncEngine:
-    """Coordinate local watchers, sync queue and worker pool."""
+    """协调本地文件监听器、同步队列和 worker 线程池。"""
 
     def __init__(self, client: CloudDriveClient, database: SyncDatabase, max_workers: int = 4, extra_ignore_rules: list[str] | None = None):
         self.client = client
@@ -33,10 +33,13 @@ class SyncEngine:
         if self._started:
             return
         self._scan_stop.clear()
+        # 先注册本地生产者，再启动远端扫描。已有文件可以立刻入队，
+        # 较慢的网络扫描保持异步执行，不阻塞启动流程。
         for task in self.database.list_sync_tasks():
             self._start_task(task, start_remote_scan=False)
         self.workers.start()
         self.watcher.start()
+        # 远端扫描可能阻塞在网络 I/O 上，因此放在服务启动后异步执行。
         for task in self.database.list_sync_tasks():
             self._start_remote_scan_if_needed(task)
         self._started = True
@@ -49,6 +52,7 @@ class SyncEngine:
     def stop(self) -> None:
         if not self._started:
             return
+        # 使用协作式停止，避免线程正在写文件或更新 SQLite 时被强制中断。
         self._scan_stop.set()
         for thread in self._scan_threads:
             thread.join(timeout=2)
@@ -80,6 +84,7 @@ class SyncEngine:
             return
         if task["direction"] not in (SyncDirection.REMOTE_TO_LOCAL.value, SyncDirection.BIDIRECTIONAL.value):
             return
+        # 每个同步任务独立一个扫描线程，避免某个远端目录很慢时阻塞其他任务。
         thread = threading.Thread(target=self._enqueue_remote_tree, args=(task,), name=f"remote-scan-{task['id']}", daemon=True)
         thread.start()
         self._scan_threads.append(thread)
@@ -87,6 +92,7 @@ class SyncEngine:
     def _enqueue_local_tree(self, task: dict) -> None:
         local_root = Path(task["local_root"])
         ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=self.extra_ignore_rules)
+        # 初始全量遍历用于覆盖 watchdog 开始监听之前就已经存在的文件。
         for path in local_root.rglob("*"):
             if self._scan_stop.is_set():
                 return
@@ -140,6 +146,8 @@ class SyncEngine:
             if ignore.should_ignore(local_path, local_root):
                 continue
             if item.is_dir:
+                # 先在本地创建远端目录结构，再把目录下的文件加入下载队列，
+                # 这样下载时本地路径是稳定存在的。
                 local_path.mkdir(parents=True, exist_ok=True)
                 self._enqueue_remote_dir(sync_task_id, item.id, item.path, local_root, local_path, ignore)
             elif item.id:
@@ -159,6 +167,8 @@ class SyncEngine:
         if remote_path not in ("", "/", "root", None):
             return remote_path, remote_path
         try:
+            # "root" 只是 UI 层占位符。真实 API 通常需要文档库的 gns:// id，
+            # 因此扫描前先解析成真正的远端根目录。
             resolver = getattr(self.client, "resolve_default_root", None)
             if callable(resolver):
                 item = resolver()
@@ -172,6 +182,8 @@ class SyncEngine:
 
     @staticmethod
     def _safe_local_name(name: str) -> str:
+        # 云端名称可能包含 Windows 不允许的文件名字符。这里只清洗本地文件名，
+        # 远端 id/path 保持原样，避免影响 API 调用。
         invalid = '<>:"/\\|?*'
         cleaned = "".join("_" if char in invalid or ord(char) < 32 else char for char in name).strip()
         if not cleaned or cleaned in {".", ".."}:

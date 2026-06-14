@@ -22,6 +22,12 @@ ProgressHandler = Callable[[SyncJob, float], None]
 
 
 class SyncWorkerPool:
+    """用于网络和文件系统 I/O 的有界 worker 线程池。
+
+    同步任务主要是 I/O 密集型，少量固定线程可以提升响应性，
+    同时避免无限创建线程带来的上下文切换开销。
+    """
+
     def __init__(self, client: CloudDriveClient, database: SyncDatabase, jobs: SyncQueue, max_workers: int = 4, progress_handler: ProgressHandler | None = None):
         self.client = client
         self.database = database
@@ -49,6 +55,8 @@ class SyncWorkerPool:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                # 设置超时可以让线程定期检查停止事件，
+                # 避免在空队列上永久阻塞。
                 job = self.jobs.get(timeout=0.5)
             except Exception:
                 continue
@@ -74,12 +82,15 @@ class SyncWorkerPool:
 
     def _upload(self, job: SyncJob) -> None:
         path = Path(job.local_path)
+        # 编辑器经常在文件尚未完全写入时就触发变更事件。
+        # 上传前等待文件大小稳定，可以降低上传半成品文件的概率。
         if not wait_until_size_stable(path):
             return
         task = self._sync_task(job.sync_task_id)
         upload_path = path
         remote_name = job.remote_name
         if task and task.get("encryption_enabled"):
+            # 加密输出写入应用缓存目录，不替换用户原始本地文件。
             passphrase = EncryptionKeyStore().load_passphrase()
             if not passphrase:
                 raise RuntimeError("同步任务已启用加密，但尚未在设置页保存加密口令。")
@@ -92,6 +103,7 @@ class SyncWorkerPool:
 
         def progress(done: int, all_bytes: int) -> None:
             value = done / all_bytes if all_bytes else 0
+            # 进度写入数据库，即使 UI 页面重建也能恢复最近状态。
             self.database.update_transfer(transfer_id, status=TransferStatus.RUNNING.value, progress=value)
             if self.progress_handler:
                 self.progress_handler(job, value)
@@ -131,6 +143,7 @@ class SyncWorkerPool:
                 self.progress_handler(job, value)
 
         try:
+            # 远端版本写入同一路径前，先保护用户本地修改。
             self._preserve_local_conflict(job, path)
             self.client.download_file(job.remote_id or "", path, progress)
             final_path = path
@@ -166,6 +179,8 @@ class SyncWorkerPool:
         sync_item = self.database.get_sync_item(job.sync_task_id, str(path))
         if sync_item and sync_item.get("checksum") == current_checksum:
             return None
+        # keep_both 冲突策略：先把用户本地版本移到冲突副本，
+        # 再允许下载的远端版本写入原路径。
         conflict_path = conflict_copy_path(path)
         path.replace(conflict_path)
         self.database.upsert_sync_item(

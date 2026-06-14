@@ -34,12 +34,12 @@ from PySide6.QtWidgets import (
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
-except Exception:  # pragma: no cover - optional PySide6 module
+except Exception:  # pragma: no cover - 可选 PySide6 模块
     QWebEngineView = None
 
 try:
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineUrlRequestInterceptor
-except Exception:  # pragma: no cover - optional PySide6 module
+except Exception:  # pragma: no cover - 可选 PySide6 模块
     QWebEnginePage = None
     QWebEngineUrlRequestInterceptor = None
 
@@ -61,6 +61,8 @@ class LoginWorker(QThread):
 
 
 class ExchangeCodeWorker(QThread):
+    """在 UI 线程之外交换 OAuth code，并验证 REST API 访问能力。"""
+
     finished_ok = Signal(object)
     failed = Signal(str)
 
@@ -151,12 +153,13 @@ class OAuthWebPage(QWebEnginePage if QWebEnginePage else object):
 
     def acceptNavigationRequest(self, url, navigation_type, is_main_frame):  # noqa: N802
         if is_main_frame and self.dialog._handle_oauth_callback(url.toString()):
+            # 在应用内部消费本地回调，避免内置浏览器跳到 127.0.0.1 后显示连接失败页。
             return False
         return super().acceptNavigationRequest(url, navigation_type, is_main_frame)
 
 
 class EmbeddedLoginDialog(QDialog):
-    """Official web login with automatic token discovery."""
+    """官方网页登录窗口，登录完成后自动进入 OAuth 授权流程。"""
 
     def __init__(self, parent: "LoginWindow"):
         super().__init__(parent)
@@ -336,6 +339,8 @@ class EmbeddedLoginDialog(QDialog):
             return
         self.oauth_started = True
         self.status.setText("网页登录成功，正在获取 REST API 授权...")
+        # 网页登录只证明用户已有浏览器会话；客户端仍需要 OAuth code/token
+        # 才能调用 REST API。
         self.web_view.setUrl(QUrl(build_authorize_url(self.login_window.settings.api, self.oauth_state)))
 
     def _handle_oauth_callback(self, url: str) -> bool:
@@ -403,7 +408,7 @@ class EmbeddedLoginDialog(QDialog):
 
 
 class LoginSettingsDialog(QDialog):
-    """Advanced login settings kept out of the primary login surface."""
+    """高级登录设置窗口，避免主登录界面承载过多配置项。"""
 
     def __init__(self, parent: "LoginWindow"):
         super().__init__(parent)

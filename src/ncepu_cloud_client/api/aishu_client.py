@@ -34,7 +34,7 @@ logger = get_logger("api.aishu")
 
 
 class AishuCloudClient(CloudDriveClient):
-    """Configurable real adapter for NCEPU/Aishu RESTful API."""
+    """可配置的华电云盘/爱数真实 RESTful API 适配器。"""
 
     MULTIPART_UPLOAD_THRESHOLD = 32 * 1024 * 1024
     MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024
@@ -718,10 +718,14 @@ class AishuCloudClient(CloudDriveClient):
         if self._preferred_api_auth == "tokenid":
             response = self._request_with_tokenid(method, url, original_access_token, **kwargs)
         if response is None:
+            # 官方文档推荐使用 Authorization: Bearer。部分 AnyShare 部署也接受
+            # tokenid 查询参数，因此 401 时会在下面走兼容重试。
             response = self._raw_request(method, url, auth=True, raise_status=False, **kwargs)
         if response.status_code == 401 and retry_auth:
             response = self._request_with_tokenid(method, url, original_access_token, **kwargs) or response
         if response.status_code == 401 and retry_auth:
+            # 对失败的 token 只刷新一次。如果其他线程已经刷新过，
+            # _refresh_for_access_token 会直接返回。
             self._refresh_for_access_token(original_access_token)
             bundle = self.token_store.load()
             latest_access_token = bundle.access_token if bundle else None
@@ -748,6 +752,7 @@ class AishuCloudClient(CloudDriveClient):
             return None
         response = self._raw_request(method, self._with_tokenid(url, access_token), auth=False, raise_status=False, **kwargs)
         if response.status_code < 400:
+            # 记录成功的认证方式，后续请求可避免先 Bearer 再 tokenid 的额外往返。
             self._preferred_api_auth = "tokenid"
             return response
         return None
@@ -775,6 +780,7 @@ class AishuCloudClient(CloudDriveClient):
             if not bundle or not bundle.access_token:
                 raise AuthError("未登录或 token 不存在，请先登录。")
             if bundle.token_type.lower() == "cookie":
+                # Cookie 凭据只用于显式兜底或手动场景；正常 OAuth REST 调用使用 Bearer token。
                 headers["Cookie"] = bundle.access_token
             else:
                 headers["Authorization"] = f"{bundle.token_type} {bundle.access_token}"

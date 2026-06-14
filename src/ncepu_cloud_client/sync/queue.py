@@ -6,6 +6,12 @@ from ncepu_cloud_client.sync.models import SyncJob
 
 
 class SyncQueue:
+    """同步任务的线程安全生产者-消费者缓冲区。
+
+    本地文件监听器和远端扫描线程是生产者，worker 线程是消费者。
+    标准库 Queue 内部已经提供跨线程安全交接所需的锁和条件变量。
+    """
+
     def __init__(self):
         self._queue: queue.Queue[SyncJob] = queue.Queue()
 
@@ -20,4 +26,3 @@ class SyncQueue:
 
     def empty(self) -> bool:
         return self._queue.empty()
-

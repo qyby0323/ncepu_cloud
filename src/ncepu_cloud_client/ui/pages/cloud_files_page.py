@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 
 
 class ListDirWorker(QThread):
+    """在 Qt UI 线程之外执行远端目录加载。"""
+
     loaded = Signal(list)
     failed = Signal(str)
 
@@ -42,6 +44,8 @@ class ListDirWorker(QThread):
 
 
 class SearchWorker(QThread):
+    """异步执行云端搜索，保证输入和导航保持响应。"""
+
     loaded = Signal(list)
     failed = Signal(str)
 
@@ -58,6 +62,8 @@ class SearchWorker(QThread):
 
 
 class ActionWorker(QThread):
+    """封装删除、重命名、移动、复制等一次性云端变更操作。"""
+
     finished_ok = Signal()
     failed = Signal(str)
 
@@ -74,6 +80,8 @@ class ActionWorker(QThread):
 
 
 class UploadWorker(QThread):
+    """上传用户选择的本地文件，避免阻塞 UI 事件循环。"""
+
     finished_ok = Signal()
     progress = Signal(int)
     failed = Signal(str)
@@ -99,6 +107,8 @@ class UploadWorker(QThread):
 
 
 class DownloadWorker(QThread):
+    """下载云端文件，避免阻塞 UI 事件循环。"""
+
     finished_ok = Signal()
     progress = Signal(int)
     failed = Signal(str)
@@ -188,12 +198,14 @@ class CloudFilesPage(QWidget):
 
     def _items_loaded(self, items: list[CloudItem], worker: ListDirWorker | None = None) -> None:
         if worker is not None and worker is not self.worker:
+            # 忽略旧请求的过期结果，避免较晚返回的旧导航覆盖当前页面。
             return
         self.table.set_items(items)
         self.status.setText(f"就绪，共 {len(items)} 项")
 
     def _load_failed(self, msg: str, worker: ListDirWorker | None = None) -> None:
         if worker is not None and worker is not self.worker:
+            # 旧请求产生的错误不应替换当前页面状态。
             return
         if worker is not None and worker.previous_state is not None:
             if self.history and self.history[-1] == worker.previous_state:
@@ -223,6 +235,7 @@ class CloudFilesPage(QWidget):
             old_worker.deleteLater()
         self.worker = worker
         self._workers.append(worker)
+        # 保留引用直到线程结束，避免 Python 垃圾回收提前回收仍在运行的 QThread。
         worker.finished.connect(lambda current=worker: self._worker_finished(current))
         worker.start()
 
@@ -246,6 +259,7 @@ class CloudFilesPage(QWidget):
 
     def _search_loaded(self, keyword: str, items: list[CloudItem], worker: SearchWorker | None = None) -> None:
         if worker is not None and worker is not self.worker:
+            # 搜索和目录导航共用当前 worker 保护，防止旧结果覆盖新结果。
             return
         self.table.set_items(items)
         self.status.setText(f"搜索完成：{keyword}，共 {len(items)} 项")

@@ -9,7 +9,7 @@ from ncepu_cloud_client.utils.time_utils import utc_now_iso
 
 
 class SyncDatabase:
-    """SQLite state database for sync tasks, items and transfers."""
+    """保存同步任务、同步文件和传输记录的 SQLite 状态库。"""
 
     def __init__(self, path: Path | None = None):
         ensure_runtime_dirs()
@@ -18,12 +18,16 @@ class SyncDatabase:
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
+        # 每次操作使用短生命周期连接，避免多个 worker 线程共享同一个 sqlite3 连接，
+        # 同时缩短写锁持有时间。
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
 
     def initialize(self) -> None:
         with self.connect() as conn:
+            # 数据库是同步功能的持久化状态：tasks 定义同步任务，
+            # items 维护本地路径到远端 id 的映射，transfers 支撑 UI 进度显示。
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sync_tasks (
@@ -151,6 +155,8 @@ class SyncDatabase:
         placeholders = ",".join("?" for _ in columns)
         update = ",".join(f"{key}=excluded.{key}" for key in payload.keys())
         with self.connect() as conn:
+            # 唯一键让 local_path 成为某个同步任务内的稳定身份。
+            # ON CONFLICT 会把重复同步转化为状态更新。
             conn.execute(
                 f"""
                 INSERT INTO sync_items ({",".join(columns)})

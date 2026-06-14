@@ -23,13 +23,15 @@ DEFAULT_RULES = [
 
 
 class SyncIgnore:
-    """Gitignore-like filter for sync tasks."""
+    """同步任务使用的类 gitignore 过滤器。"""
 
     def __init__(self, rules: list[str] | None = None):
         self.rules = self._normalize_rules(rules or DEFAULT_RULES)
 
     @classmethod
     def from_file(cls, path: Path, extra_rules: list[str] | None = None) -> "SyncIgnore":
+        # 规则是叠加关系：内置规则过滤常见干扰文件，
+        # .syncignore 处理单个同步目录策略，设置页规则作为全局补充。
         rules = list(DEFAULT_RULES)
         if path.exists():
             rules.extend(path.read_text(encoding="utf-8").splitlines())
@@ -50,6 +52,7 @@ class SyncIgnore:
         parts = set(rel.parts)
         for rule in self.rules:
             if rule.endswith("/"):
+                # 目录规则既匹配目录自身，也匹配目录下所有内容，行为接近 gitignore。
                 dirname = rule.rstrip("/")
                 if dirname in parts or rel_text.startswith(dirname + "/"):
                     return True
@@ -67,4 +70,3 @@ class SyncIgnore:
                 continue
             normalized.append(clean.replace("\\", "/"))
         return normalized
-
