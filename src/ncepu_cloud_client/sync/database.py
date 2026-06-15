@@ -9,7 +9,12 @@ from ncepu_cloud_client.utils.time_utils import utc_now_iso
 
 
 class SyncDatabase:
-    """保存同步任务、同步文件和传输记录的 SQLite 状态库。"""
+    """保存同步任务、同步文件和传输记录的 SQLite 状态库。
+
+    同步程序不能只依赖内存，因为客户端关闭后仍要知道哪些文件已经同步、
+    哪些远端 id 对应哪些本地路径，以及上次传输是否失败。
+    SQLite 适合这种单机桌面应用：无需额外数据库服务，事务和文件锁由库内部处理。
+    """
 
     def __init__(self, path: Path | None = None):
         ensure_runtime_dirs()
@@ -20,6 +25,7 @@ class SyncDatabase:
     def connect(self) -> sqlite3.Connection:
         # 每次操作使用短生命周期连接，避免多个 worker 线程共享同一个 sqlite3 连接，
         # 同时缩短写锁持有时间。
+        # sqlite3 默认连接不建议跨线程复用，所以这里把连接创建限制在单个数据库操作内。
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -28,6 +34,7 @@ class SyncDatabase:
         with self.connect() as conn:
             # 数据库是同步功能的持久化状态：tasks 定义同步任务，
             # items 维护本地路径到远端 id 的映射，transfers 支撑 UI 进度显示。
+            # 三张表拆开可以避免把任务配置、文件状态和一次性传输日志混在一起。
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sync_tasks (
@@ -118,6 +125,8 @@ class SyncDatabase:
     ) -> None:
         fields: list[str] = []
         values: list[Any] = []
+        # 这里按传入参数动态生成 UPDATE 字段，避免调用方只修改一个选项时误覆盖其他设置。
+        # 字段名来自固定白名单分支，不接收用户输入，因此不会形成 SQL 注入入口。
         if delete_sync_enabled is not None:
             fields.append("delete_sync_enabled=?")
             values.append(int(delete_sync_enabled))
@@ -157,6 +166,7 @@ class SyncDatabase:
         with self.connect() as conn:
             # 唯一键让 local_path 成为某个同步任务内的稳定身份。
             # ON CONFLICT 会把重复同步转化为状态更新。
+            # 这比先 SELECT 再 INSERT/UPDATE 更简洁，也减少并发 worker 下的竞态窗口。
             conn.execute(
                 f"""
                 INSERT INTO sync_items ({",".join(columns)})
@@ -178,6 +188,8 @@ class SyncDatabase:
     def add_transfer(self, sync_task_id: int | None, local_path: str | None, remote_id: str | None, direction: str) -> int:
         now = utc_now_iso()
         with self.connect() as conn:
+            # transfer_records 记录的是“一次传输尝试”，不是文件的最终状态。
+            # 因此同一个文件可以有多条上传/下载记录，方便 UI 展示历史和失败原因。
             cur = conn.execute(
                 """
                 INSERT INTO transfer_records
@@ -191,6 +203,8 @@ class SyncDatabase:
     def update_transfer(self, transfer_id: int, status: str | None = None, progress: float | None = None, error_message: str | None = None) -> None:
         fields: list[str] = []
         values: list[Any] = []
+        # 与任务配置更新一样，这里只写入发生变化的字段。
+        # 进度回调可能非常频繁，保持 SQL 简单有助于降低数据库写入开销。
         if status is not None:
             fields.append("status=?")
             values.append(status)

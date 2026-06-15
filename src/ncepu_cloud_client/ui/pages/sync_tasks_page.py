@@ -22,7 +22,7 @@ class SyncTasksPage(QWidget):
         self.local_input = QLineEdit()
         self.local_input.setPlaceholderText("本地目录")
         self.remote_input = QLineEdit()
-        self.remote_input.setPlaceholderText("云端目录 ID（如 gns://...），留空自动选择第一个可访问文档库")
+        self.remote_input.setPlaceholderText("云端可写目录 ID（如 我的文档库 下的 gns://...），留空优先选择个人文档库")
         self.direction = QComboBox()
         self.direction.addItem("双向同步", SyncDirection.BIDIRECTIONAL.value)
         self.direction.addItem("本地到云端", SyncDirection.LOCAL_TO_REMOTE.value)

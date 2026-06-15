@@ -61,7 +61,11 @@ class LoginWorker(QThread):
 
 
 class ExchangeCodeWorker(QThread):
-    """在 UI 线程之外交换 OAuth code，并验证 REST API 访问能力。"""
+    """在 UI 线程之外交换 OAuth code，并验证 REST API 访问能力。
+
+    授权码换 token 要访问认证服务器，随后还要调用文档库和容量接口验证 token。
+    这些都是网络请求，所以必须放在后台线程中执行。
+    """
 
     finished_ok = Signal(object)
     failed = Signal(str)
@@ -76,6 +80,8 @@ class ExchangeCodeWorker(QThread):
             if not hasattr(self.client, "exchange_code"):
                 raise RuntimeError("当前 adapter 不支持 OAuth code 换取 token。")
             bundle = self.client.exchange_code(self.code)
+            # 只拿到 token 还不代表它能访问网盘业务接口。
+            # 这里立即探测文档库和容量接口，避免进入主程序后才暴露“token 无效”。
             self.client.list_libraries()
             self.client.get_quota()
             self.finished_ok.emit(bundle)
@@ -129,6 +135,7 @@ class TokenRequestInterceptor(QWebEngineUrlRequestInterceptor if QWebEngineUrlRe
     def interceptRequest(self, info) -> None:  # noqa: N802
         candidates: list[str] = []
         try:
+            # 有些 OAuth/前端页面会把 token 放在跳转 URL 或 hash 中。
             candidates.append(info.requestUrl().toString())
         except Exception:
             pass
@@ -137,6 +144,8 @@ class TokenRequestInterceptor(QWebEngineUrlRequestInterceptor if QWebEngineUrlRe
             for key, value in headers.items():
                 key_text = bytes(key).decode("utf-8", errors="ignore")
                 value_text = bytes(value).decode("utf-8", errors="ignore")
+                # 也有部署会在请求头中带 Authorization: Bearer。
+                # 这里统一收集候选文本，再交给解析函数判断是否真是 token。
                 candidates.append(f"{key_text}: {value_text}")
         except Exception:
             pass
@@ -159,7 +168,11 @@ class OAuthWebPage(QWebEnginePage if QWebEnginePage else object):
 
 
 class EmbeddedLoginDialog(QDialog):
-    """官方网页登录窗口，登录完成后自动进入 OAuth 授权流程。"""
+    """官方网页登录窗口，登录完成后自动进入 OAuth 授权流程。
+
+    内置浏览器的目标是“到手即用”：用户只需要在官方页面输入账号密码，
+    客户端自动检测网页登录成功、发起 OAuth 授权、截获回调 code 并换取 REST token。
+    """
 
     def __init__(self, parent: "LoginWindow"):
         super().__init__(parent)
@@ -199,16 +212,21 @@ class EmbeddedLoginDialog(QDialog):
         self.timer.setInterval(1200)
         self.timer.timeout.connect(self.scan_for_token)
         self.timer.start()
+        # 首屏打开官方入口，而不是自己拼一个空白 OAuth 页面。
+        # 登录成功后再跳转到授权地址，可以复用官方页面建立的登录会话。
         self.web_view.setUrl(QUrl(official_entry_url(parent.settings.api)))
 
     def _setup_web_profile(self) -> None:
         page = self.web_view.page()
         profile = page.profile()
         if QWebEngineUrlRequestInterceptor is not None:
+            # 拦截器只读取 URL/请求头中的候选 token，不修改请求内容。
             self.interceptor = TokenRequestInterceptor()
             self.interceptor.token_seen.connect(self._candidate_token_seen)
             profile.setUrlRequestInterceptor(self.interceptor)
         try:
+            # 记录 cookie 是为了兼容部分登录页把会话状态保存在浏览器 cookie 中的情况。
+            # 当前主线仍以 OAuth code/token 为准，不把 cookie 当成默认 REST 凭据。
             profile.cookieStore().cookieAdded.connect(self._cookie_added)
         except Exception:
             pass
@@ -218,6 +236,8 @@ class EmbeddedLoginDialog(QDialog):
             return
         if not self._is_callback_url(self.web_view.url().toString()):
             return
+        # 只有当前页面已经在回调地址时，才接受从 URL/请求头里解析出来的 token。
+        # 这样可以避免把网页登录页面内部的临时参数误认为 REST API token。
         bundle = self.login_window._token_bundle_from_text(text)
         if bundle:
             self._accept_bundle(bundle)
@@ -233,6 +253,8 @@ class EmbeddedLoginDialog(QDialog):
 
     def scan_for_token(self) -> None:
         self._url_changed(self.web_view.url())
+        # JavaScript 扫描只用于判断“官方网页是否已经登录成功”。
+        # 真正进入客户端仍然依赖 OAuth 授权回调或 token 验证，不直接信任页面文本。
         script = """
 (() => {
   const objectFromStorage = (storage) => {
@@ -262,6 +284,8 @@ class EmbeddedLoginDialog(QDialog):
         self.scan_indexed_db()
 
     def scan_indexed_db(self) -> None:
+        # 部分前端框架会把会话信息放进 IndexedDB。
+        # 这里做有限扫描，只取少量数据库/对象仓库/记录，避免长时间阻塞页面。
         script = """
 (async () => {
   const result = {};
@@ -313,6 +337,8 @@ class EmbeddedLoginDialog(QDialog):
         if self.oauth_started:
             return
         if self._looks_like_logged_in_page(payload or ""):
+            # 检测到资源库、工作中心等登录后页面特征，再启动 OAuth 授权。
+            # 这一步把“网页登录态”转换成“客户端 REST API 授权态”。
             self.start_oauth_authorization()
 
     def _url_changed(self, url: QUrl) -> None:
@@ -331,6 +357,8 @@ class EmbeddedLoginDialog(QDialog):
         body = str(data.get("bodyText") or "")
         if "oauth2/signin" in href or "login_challenge" in href:
             return False
+        # 这些关键词来自华电网盘登录后的主界面。
+        # 要求至少命中两个，是为了降低普通错误页或登录页误判为已登录的概率。
         markers = ("资源库", "工作中心", "文件锁管理", "共享管理", "回收站", "文件隔离区")
         return sum(1 for marker in markers if marker in body) >= 2
 
@@ -349,6 +377,8 @@ class EmbeddedLoginDialog(QDialog):
         parsed = urlparse(url)
         params = parse_qs(parsed.query or parsed.fragment)
         if params.get("state", [""])[0] != self.oauth_state:
+            # state 不匹配时仍然消费这个本地回调地址，防止浏览器显示 127.0.0.1 连接失败；
+            # 但不会信任其中的 code/token。
             return True
         error = params.get("error", [""])[0]
         if error:
@@ -362,6 +392,7 @@ class EmbeddedLoginDialog(QDialog):
             return True
         code = params.get("code", [""])[0]
         if code:
+            # 标准授权码模式：客户端拿 code 到 token endpoint 换 access_token/refresh_token。
             self.exchange_oauth_code(code)
         return True
 
@@ -387,6 +418,7 @@ class EmbeddedLoginDialog(QDialog):
     def _exchange_failed(self, message: str) -> None:
         self.exchange_started = False
         self.oauth_started = False
+        # 换 token 或验证 REST API 失败时清理本地 token，避免下次启动误以为已经登录。
         TokenStore(self.login_window.settings.security).clear()
         self.status.setText(f"REST API 授权失败：{message}")
         QMessageBox.warning(self, "REST API 授权失败", message)
@@ -738,6 +770,8 @@ class LoginWindow(QDialog):
         token_store = TokenStore(self.settings.security)
         token_store.save(bundle)
         try:
+            # 持久化前先实际调用真实业务接口验证。
+            # 如果 token 只能访问网页端、不能访问 REST API，就会在这里失败并被清理。
             self.client.list_libraries()
             self.client.get_quota()
         except Exception:

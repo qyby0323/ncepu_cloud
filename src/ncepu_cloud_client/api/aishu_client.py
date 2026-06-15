@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import threading
 from pathlib import Path
@@ -34,7 +35,11 @@ logger = get_logger("api.aishu")
 
 
 class AishuCloudClient(CloudDriveClient):
-    """可配置的华电云盘/爱数真实 RESTful API 适配器。"""
+    """可配置的华电云盘/爱数真实 RESTful API 适配器。
+
+    这一层是项目对真实云盘的“防腐层”：UI 和同步模块只依赖 CloudDriveClient 抽象，
+    不直接关心爱数接口的字段名差异、认证方式差异和错误响应格式。
+    """
 
     MULTIPART_UPLOAD_THRESHOLD = 32 * 1024 * 1024
     MULTIPART_CHUNK_SIZE = 8 * 1024 * 1024
@@ -143,6 +148,8 @@ class AishuCloudClient(CloudDriveClient):
         return self.exchange_code(code)
 
     def list_libraries(self) -> list[CloudLibrary]:
+        # 不同版本的 AnyShare/爱数部署暴露的文档库入口不完全一致。
+        # 因此先走主入口，再走 owned-doc-lib，最后走几个分类文档库兜底接口。
         try:
             data = self._request("GET", "/efast/v1/entry-doc-lib")
         except NotFoundError:
@@ -159,9 +166,8 @@ class AishuCloudClient(CloudDriveClient):
         return [self._library_from_raw(item) for item in items]
 
     def resolve_default_root(self) -> CloudItem:
-        for item in self.list_dir("/"):
-            if item.is_dir and item.id:
-                return item
+        for item in self._candidate_root_items():
+            return item
         raise NotFoundError("未能获取可访问的文档库根目录，请确认账号有云盘权限并重新登录。")
 
     def get_quota(self) -> CloudQuota:
@@ -184,6 +190,8 @@ class AishuCloudClient(CloudDriveClient):
 
     def list_dir(self, remote_path: str | None = None, parent_id: str | None = None) -> list[CloudItem]:
         if not parent_id and remote_path in (None, "", "/"):
+            # 根目录在 UI 中展示为“可访问的文档库列表”，
+            # 不是某一个真实文件夹，这样能同时看到个人、共享、部门等入口。
             libraries = self.list_libraries()
             if libraries:
                 return [self._library_to_item(library) for library in libraries]
@@ -192,6 +200,8 @@ class AishuCloudClient(CloudDriveClient):
         last_error: CloudError | None = None
         for payload in payloads:
             try:
+                # dir/list 对 docid、docId、parentId、path 等参数的支持在不同部署上有差异。
+                # 这里按多个 payload 重试，是为了让同一套客户端适配更多学校网盘版本。
                 data = self._request("POST", "/efast/v1/dir/list", json=payload)
                 items = [self._item_from_raw(item) for item in self._extract_list(data)]
                 if items:
@@ -209,6 +219,8 @@ class AishuCloudClient(CloudDriveClient):
                 if last_error:
                     raise last_error
                 raise NotFoundError("目录不存在或目录浏览协议不可用。")
+            # 部分旧接口不支持 /dir/list，但支持 folders/{id}/sub_objects。
+            # 作为最后兜底可以提高公共文档库和特殊目录的可访问性。
             data = self._request("GET", f"/efast/v1/folders/{quote(parent_id, safe='')}/sub_objects")
             return [self._item_from_raw(item) for item in self._extract_list(data)]
         except NotFoundError:
@@ -225,6 +237,8 @@ class AishuCloudClient(CloudDriveClient):
                 payloads.append(payload)
 
         if parent_id:
+            # 同一个远端目录 id 在不同 API 文档或实际响应中可能叫 docid/docId/id/itemId。
+            # 都尝试一遍，比在 UI 层猜字段更可靠。
             add({"docid": parent_id})
             add({"docId": parent_id})
             add({"id": parent_id})
@@ -233,6 +247,8 @@ class AishuCloudClient(CloudDriveClient):
         if remote_path:
             add({"path": remote_path})
             if remote_path.startswith("gns://"):
+                # gns:// 是 AnyShare 常见的全局命名空间标识，
+                # 某些接口把它当路径，某些接口把它当 docid。
                 add({"docid": remote_path})
                 add({"docId": remote_path})
         combined: dict[str, Any] = {}
@@ -254,8 +270,56 @@ class AishuCloudClient(CloudDriveClient):
         return payloads
 
     def mkdir(self, remote_path: str) -> CloudItem:
-        data = self._request("POST", "/efast/v1/dir/create", json={"path": remote_path, "name": Path(remote_path).name})
-        return self._item_from_raw(self._extract_object(data))
+        last_error: CloudError | None = None
+        payloads = self._mkdir_payloads(remote_path)
+        if payloads and payloads[0].get("docid") == "root":
+            payloads = self._mkdir_payloads(remote_path, self._resolve_upload_dir_id("root"))
+        request_kwargs = [{"json": payload} for payload in payloads]
+        request_kwargs.extend({"data": {"json": json.dumps(payload, ensure_ascii=False)}} for payload in payloads)
+        request_kwargs.extend({"data": payload} for payload in payloads)
+        for kwargs in request_kwargs:
+            try:
+                data = self._request("POST", "/efast/v1/dir/create", **kwargs)
+                raw = self._extract_object(data)
+                if not raw and "json" in kwargs:
+                    raw = kwargs["json"]
+                return self._item_from_raw(raw)
+            except CloudError as exc:
+                if isinstance(exc, (AuthError, PermissionDeniedError, TokenExpiredError, NetworkError, RateLimitError, ServerError)):
+                    raise
+                last_error = exc
+        if last_error:
+            raise last_error
+        raise CloudError("创建文件夹失败：无法生成有效请求参数。")
+
+    @staticmethod
+    def _mkdir_payloads(remote_path: str, default_parent_id: str = "root") -> list[dict[str, Any]]:
+        path_text = remote_path.strip().rstrip("/")
+        name = Path(path_text).name
+        parent = str(Path(path_text).parent).replace("\\", "/")
+        if path_text.startswith("gns://"):
+            marker = path_text.rfind("/")
+            if marker > len("gns://") - 1:
+                parent = path_text[:marker]
+                name = path_text[marker + 1 :]
+        if parent in ("", ".", "/"):
+            parent = default_parent_id
+        payloads: list[dict[str, Any]] = []
+
+        def add(payload: dict[str, Any]) -> None:
+            clean = {key: value for key, value in payload.items() if value not in (None, "")}
+            if clean and clean not in payloads:
+                payloads.append(clean)
+
+        # 爱数 dir/create 的不同部署对父目录字段名不完全一致。
+        # 优先使用 docid/parentDocid 这种真实目录标识，最后才退回 path。
+        add({"docid": parent, "docId": parent, "name": name})
+        add({"docid": parent, "docId": parent, "dirname": name, "dirName": name})
+        add({"parentDocid": parent, "parentDocId": parent, "name": name})
+        add({"parentId": parent, "parent_id": parent, "name": name})
+        add({"id": parent, "itemId": parent, "name": name})
+        add({"path": path_text, "name": name})
+        return payloads
 
     def delete(self, item_id: str) -> None:
         try:
@@ -332,7 +396,20 @@ class AishuCloudClient(CloudDriveClient):
         return payloads
 
     def upload_file(self, local_path: Path, remote_dir_id: str, remote_name: str | None = None, progress_cb: ProgressCallback | None = None) -> CloudItem:
-        remote_dir_id = self._resolve_upload_dir_id(remote_dir_id)
+        last_permission_error: PermissionDeniedError | None = None
+        for resolved_dir_id in self._resolve_upload_dir_candidates(remote_dir_id):
+            try:
+                return self._upload_file_to_dir(local_path, resolved_dir_id, remote_name, progress_cb)
+            except PermissionDeniedError as exc:
+                if remote_dir_id not in ("", "/", "root"):
+                    raise
+                last_permission_error = exc
+                logger.warning("upload root candidate is not writable, trying next one: %s", exc)
+        if last_permission_error:
+            raise PermissionDeniedError(f"{last_permission_error}\n\n当前账号没有向默认文档库上传的权限，请在同步任务中填写“我的文档库”下可写目录的 gns:// ID。")
+        raise NotFoundError("未找到可用于上传的远端文档库。")
+
+    def _upload_file_to_dir(self, local_path: Path, remote_dir_id: str, remote_name: str | None = None, progress_cb: ProgressCallback | None = None) -> CloudItem:
         total = local_path.stat().st_size
         name = remote_name or local_path.name
         if total >= self.MULTIPART_UPLOAD_THRESHOLD:
@@ -359,9 +436,47 @@ class AishuCloudClient(CloudDriveClient):
         return self._item_from_raw(self._extract_object(data))
 
     def _resolve_upload_dir_id(self, remote_dir_id: str) -> str:
+        return self._resolve_upload_dir_candidates(remote_dir_id)[0]
+
+    def _resolve_upload_dir_candidates(self, remote_dir_id: str) -> list[str]:
         if remote_dir_id not in ("", "/", "root"):
-            return remote_dir_id
-        return self.resolve_default_root().id
+            return [remote_dir_id]
+        candidates: list[str] = []
+        for item in self._candidate_root_items():
+            if item.id and item.id not in candidates:
+                candidates.append(item.id)
+        return candidates or [self.resolve_default_root().id]
+
+    def _candidate_root_items(self) -> list[CloudItem]:
+        items = [item for item in self.list_dir("/") if item.is_dir and item.id]
+        return sorted(items, key=self._writable_root_score, reverse=True)
+
+    @staticmethod
+    def _writable_root_score(item: CloudItem) -> int:
+        raw = item.raw or {}
+        text = " ".join(
+            str(value).lower()
+            for value in (
+                item.name,
+                item.id,
+                item.path,
+                raw.get("type"),
+                raw.get("docLibType"),
+                raw.get("libraryType"),
+                raw.get("name"),
+                raw.get("libraryName"),
+                raw.get("docLibName"),
+            )
+            if value
+        )
+        score = 0
+        if "user_doc_lib" in text or "personal" in text or "private" in text:
+            score += 100
+        if any(word in text for word in ("我的文档库", "个人文档库", "我的", "个人")):
+            score += 80
+        if any(word in text for word in ("shared", "public", "department", "knowledge", "共享", "公共", "部门", "学校", "资源库")):
+            score -= 80
+        return score
 
     def _upload_file_multipart(
         self,
@@ -505,6 +620,8 @@ class AishuCloudClient(CloudDriveClient):
     def download_file(self, item_id: str, local_path: Path, progress_cb: ProgressCallback | None = None) -> Path:
         data = self._request_download(item_id)
         obj = self._extract_object(data)
+        # 下载通常分两步：业务接口返回临时对象存储地址，然后客户端再去拉取文件流。
+        # 字段名随版本不同可能是 downloadUrl/storageUrl/location 等，所以要统一抽取。
         download_url = self._first_str(
             obj,
             "downloadUrl",
@@ -536,6 +653,8 @@ class AishuCloudClient(CloudDriveClient):
             access_token = self._current_access_token()
             for payload in self._download_payloads(item_id, access_token):
                 try:
+                    # 官方 osdownload 接口有的部署要求 token 同时出现在请求体中。
+                    # _download_payloads 会把 docid 和 token 的几种常见字段名都补上。
                     return self._request("POST", "/efast/v1/file/osdownload", json=payload)
                 except AuthError as exc:
                     last_error = exc
@@ -716,12 +835,15 @@ class AishuCloudClient(CloudDriveClient):
         url = self._absolute(path)
         response = None
         if self._preferred_api_auth == "tokenid":
+            # 如果前面已经证明 tokenid 查询参数可用，就优先使用它，减少一次 401 往返。
             response = self._request_with_tokenid(method, url, original_access_token, **kwargs)
         if response is None:
             # 官方文档推荐使用 Authorization: Bearer。部分 AnyShare 部署也接受
             # tokenid 查询参数，因此 401 时会在下面走兼容重试。
             response = self._raw_request(method, url, auth=True, raise_status=False, **kwargs)
         if response.status_code == 401 and retry_auth:
+            # 第一次 401 不马上判定 token 失效，先尝试另一种认证传参形式。
+            # 这是为了兼容学校网盘部署中“文档写 Bearer，实际接口要 tokenid”的情况。
             response = self._request_with_tokenid(method, url, original_access_token, **kwargs) or response
         if response.status_code == 401 and retry_auth:
             # 对失败的 token 只刷新一次。如果其他线程已经刷新过，
@@ -769,6 +891,7 @@ class AishuCloudClient(CloudDriveClient):
         with self._refresh_lock:
             latest = self.token_store.load()
             if original_access_token and latest and latest.access_token and latest.access_token != original_access_token:
+                # 其他线程已经刷新过 token，本线程不再重复刷新，避免并发刷新互相覆盖。
                 return
             self._refresh_token_unlocked()
 
@@ -792,6 +915,8 @@ class AishuCloudClient(CloudDriveClient):
             client_kwargs: dict[str, Any] = {"timeout": timeout, "follow_redirects": True}
             if proxies:
                 client_kwargs["proxy"] = proxies.get("https") or proxies.get("http")
+            # 每次请求创建短生命周期 httpx.Client，逻辑简单且便于及时释放连接。
+            # 对流式下载会把 client 挂到 response 上，等文件写完后再关闭。
             client = httpx.Client(**client_kwargs)
             logger.debug("HTTP %s %s", method, redact_url(url))
             response = client.request(method, url, headers=headers, **kwargs)
@@ -877,6 +1002,8 @@ class AishuCloudClient(CloudDriveClient):
 
     def _list_doc_lib_fallbacks(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+        # 文档库接口按用途拆分：个人、部门、自定义、知识库。
+        # 某个账号没有权限的接口可能返回 403/404，跳过即可，不影响其他库展示。
         for path in (
             "/efast/v1/doc-lib/user",
             "/efast/v1/doc-lib/department",
@@ -972,6 +1099,8 @@ class AishuCloudClient(CloudDriveClient):
             items.append(raw)
 
         def walk(value: Any) -> None:
+            # 真实接口返回结构可能是 data.items，也可能是 result.list，
+            # 甚至多层嵌套。递归遍历可以把解析逻辑集中在适配层。
             if isinstance(value, list):
                 for entry in value:
                     walk(entry)
@@ -989,6 +1118,8 @@ class AishuCloudClient(CloudDriveClient):
 
     @staticmethod
     def _looks_like_library(raw: dict[str, Any]) -> bool:
+        # 判断“像不像文档库”不能只看一个字段，因为不同版本返回字段差异较大。
+        # 这里综合 type、root id、名称字段来判断，并在 _extract_libraries 中去重。
         doc_lib_types = {
             "user_doc_lib",
             "department_doc_lib",
@@ -1172,6 +1303,9 @@ class AishuCloudClient(CloudDriveClient):
             or raw.get("object_name")
             or raw.get("docName")
             or raw.get("doc_name")
+            or raw.get("dirname")
+            or raw.get("dirName")
+            or raw.get("folderName")
             or raw.get("title")
         )
         if name:

@@ -23,7 +23,11 @@ DEFAULT_RULES = [
 
 
 class SyncIgnore:
-    """同步任务使用的类 gitignore 过滤器。"""
+    """同步任务使用的类 gitignore 过滤器。
+
+    过滤器用于排除临时文件、版本控制目录、虚拟环境和缓存文件。
+    这些文件频繁变化且通常没有同步价值，如果不排除，会放大同步队列压力并产生噪声。
+    """
 
     def __init__(self, rules: list[str] | None = None):
         self.rules = self._normalize_rules(rules or DEFAULT_RULES)
@@ -44,8 +48,11 @@ class SyncIgnore:
         rel = candidate
         if root is not None:
             try:
+                # 规则匹配优先使用相对于同步根目录的路径，
+                # 这样用户可以写出 node_modules/、build/*.tmp 这类目录内规则。
                 rel = candidate.relative_to(root)
             except ValueError:
+                # 如果传入路径不在同步根目录下，就退回完整路径进行保守匹配。
                 rel = candidate
         rel_text = rel.as_posix()
         name = candidate.name
@@ -58,6 +65,8 @@ class SyncIgnore:
                     return True
                 continue
             if fnmatch.fnmatch(name, rule) or fnmatch.fnmatch(rel_text, rule):
+                # 同时匹配文件名和相对路径：*.tmp 适合文件名，
+                # docs/*.log 这类规则则需要完整相对路径。
                 return True
         return False
 
@@ -68,5 +77,7 @@ class SyncIgnore:
             clean = rule.strip()
             if not clean or clean.startswith("#"):
                 continue
+            # Windows 使用反斜杠，gitignore 风格更接近正斜杠；
+            # 统一为 / 后，规则在不同平台上表现更一致。
             normalized.append(clean.replace("\\", "/"))
         return normalized

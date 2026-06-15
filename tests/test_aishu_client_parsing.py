@@ -1,7 +1,7 @@
 import base64
 
 from ncepu_cloud_client.api.aishu_client import AishuCloudClient
-from ncepu_cloud_client.api.errors import AuthError, NotFoundError, PermissionDeniedError
+from ncepu_cloud_client.api.errors import AuthError, CloudError, NotFoundError, PermissionDeniedError
 from ncepu_cloud_client.api.models import CloudItem, CloudItemType, TokenBundle
 from ncepu_cloud_client.auth.oauth import build_authorize_url
 from ncepu_cloud_client.auth.login_flow import official_entry_url, open_login_pages
@@ -495,6 +495,80 @@ def test_list_libraries_combines_nested_personal_and_public_groups(monkeypatch):
     assert [item.path for item in items] == ["gns://personal/root", "gns://public/root"]
 
 
+def test_resolve_default_root_prefers_personal_library(monkeypatch):
+    client = AishuCloudClient(Settings())
+
+    monkeypatch.setattr(
+        client,
+        "list_dir",
+        lambda remote_path=None, parent_id=None: [
+            CloudItem(id="gns://public/root", name="共享文档库", type=CloudItemType.DIRECTORY, path="gns://public/root", raw={"type": "shared_user_doc_lib"}),
+            CloudItem(id="gns://personal/root", name="我的文档库", type=CloudItemType.DIRECTORY, path="gns://personal/root", raw={"type": "user_doc_lib"}),
+        ],
+    )
+
+    root = client.resolve_default_root()
+
+    assert root.id == "gns://personal/root"
+
+
+def test_mkdir_uses_parent_docid_payload(monkeypatch):
+    client = AishuCloudClient(Settings())
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs["json"]))
+        return {"data": {"docid": "gns://root/new-folder", "name": "new-folder", "type": "folder"}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    item = client.mkdir("gns://root/new-folder")
+
+    assert item.name == "new-folder"
+    assert calls[0] == (
+        "POST",
+        "/efast/v1/dir/create",
+        {"docid": "gns://root", "docId": "gns://root", "name": "new-folder"},
+    )
+
+
+def test_mkdir_retries_payload_shape_after_json_error(monkeypatch):
+    client = AishuCloudClient(Settings())
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append(kwargs["json"])
+        if len(calls) == 1:
+            raise CloudError("JSON 格式错误")
+        return {"data": {"docid": "gns://root/new-folder", "name": "new-folder", "type": "folder"}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    item = client.mkdir("gns://root/new-folder")
+
+    assert item.name == "new-folder"
+    assert calls[0]["docid"] == "gns://root"
+    assert calls[1]["dirname"] == "new-folder"
+
+
+def test_mkdir_falls_back_to_form_json_payload(monkeypatch):
+    client = AishuCloudClient(Settings())
+    form_payloads = []
+
+    def fake_request(method, path, **kwargs):
+        if "json" in kwargs:
+            raise CloudError("JSON 格式错误")
+        form_payloads.append(kwargs["data"])
+        return {"data": {"docid": "gns://root/new-folder", "dirName": "new-folder", "type": "folder"}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    item = client.mkdir("gns://root/new-folder")
+
+    assert item.name == "new-folder"
+    assert form_payloads[0]["json"].startswith("{")
+
+
 def test_list_dir_falls_back_to_paged_folder_objects(monkeypatch):
     client = AishuCloudClient(Settings())
     calls = []
@@ -767,6 +841,84 @@ def test_upload_resolves_mock_root_to_first_real_library(monkeypatch, tmp_path):
     client.upload_file(source, "root")
 
     assert api_calls[0][2]["json"]["docid"] == "gns://doc-lib/root"
+
+
+def test_upload_root_prefers_personal_library(monkeypatch, tmp_path):
+    client = AishuCloudClient(Settings())
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"abc")
+    begin_docids = []
+
+    monkeypatch.setattr(
+        client,
+        "list_dir",
+        lambda remote_path=None, parent_id=None: [
+            CloudItem(id="gns://public/root", name="共享文档库", type=CloudItemType.DIRECTORY, path="gns://public/root", raw={"type": "shared_user_doc_lib"}),
+            CloudItem(id="gns://personal/root", name="我的文档库", type=CloudItemType.DIRECTORY, path="gns://personal/root", raw={"type": "user_doc_lib"}),
+        ],
+    )
+
+    def fake_request(method, path, **kwargs):
+        if path == "/efast/v1/file/osbeginupload":
+            docid = kwargs["json"]["docid"]
+            begin_docids.append(docid)
+            if docid == "gns://public/root":
+                raise PermissionDeniedError("CheckPerm Failed")
+            return {
+                "data": {
+                    "authrequest": ["PUT", "https://storage.example/upload"],
+                    "docid": "gns://personal/root/report.txt",
+                    "name": "report.txt",
+                }
+            }
+        return {"data": {"docid": "gns://personal/root/report.txt", "name": "report.txt", "length": 3}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr(client, "_raw_request", lambda *args, **kwargs: None)
+
+    item = client.upload_file(source, "root")
+
+    assert begin_docids == ["gns://personal/root"]
+    assert item.id == "gns://personal/root/report.txt"
+
+
+def test_upload_root_retries_next_candidate_when_first_is_readonly(monkeypatch, tmp_path):
+    client = AishuCloudClient(Settings())
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"abc")
+    begin_docids = []
+
+    monkeypatch.setattr(
+        client,
+        "_candidate_root_items",
+        lambda: [
+            CloudItem(id="gns://public/root", name="共享文档库", type=CloudItemType.DIRECTORY, path="gns://public/root", raw={"type": "shared_user_doc_lib"}),
+            CloudItem(id="gns://personal/root", name="我的文档库", type=CloudItemType.DIRECTORY, path="gns://personal/root", raw={"type": "user_doc_lib"}),
+        ],
+    )
+
+    def fake_request(method, path, **kwargs):
+        if path == "/efast/v1/file/osbeginupload":
+            docid = kwargs["json"]["docid"]
+            begin_docids.append(docid)
+            if docid == "gns://public/root":
+                raise PermissionDeniedError("CheckPerm Failed")
+            return {
+                "data": {
+                    "authrequest": ["PUT", "https://storage.example/upload"],
+                    "docid": "gns://personal/root/report.txt",
+                    "name": "report.txt",
+                }
+            }
+        return {"data": {"docid": "gns://personal/root/report.txt", "name": "report.txt", "length": 3}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    monkeypatch.setattr(client, "_raw_request", lambda *args, **kwargs: None)
+
+    item = client.upload_file(source, "root")
+
+    assert begin_docids == ["gns://public/root", "gns://personal/root"]
+    assert item.id == "gns://personal/root/report.txt"
 
 
 def test_upload_file_uses_multipart_protocol(monkeypatch, tmp_path):

@@ -24,7 +24,11 @@ from PySide6.QtWidgets import (
 
 
 class ListDirWorker(QThread):
-    """在 Qt UI 线程之外执行远端目录加载。"""
+    """在 Qt UI 线程之外执行远端目录加载。
+
+    Qt 的主线程负责绘制窗口、响应按钮和处理信号槽。
+    远端目录加载包含网络 I/O，必须放到 QThread 中，否则网络慢时界面会卡死。
+    """
 
     loaded = Signal(list)
     failed = Signal(str)
@@ -38,13 +42,18 @@ class ListDirWorker(QThread):
 
     def run(self) -> None:
         try:
+            # worker 线程不能直接改 UI，只通过 Signal 把结果发回主线程。
             self.loaded.emit(self.client.list_dir(remote_path=self.path, parent_id=self.parent_id))
         except Exception as exc:
             self.failed.emit(str(exc))
 
 
 class SearchWorker(QThread):
-    """异步执行云端搜索，保证输入和导航保持响应。"""
+    """异步执行云端搜索，保证输入和导航保持响应。
+
+    搜索可能走真实搜索接口，也可能回退为递归遍历目录。
+    两种路径都可能耗时，因此和目录加载一样放到后台线程。
+    """
 
     loaded = Signal(list)
     failed = Signal(str)
@@ -62,7 +71,11 @@ class SearchWorker(QThread):
 
 
 class ActionWorker(QThread):
-    """封装删除、重命名、移动、复制等一次性云端变更操作。"""
+    """封装删除、重命名、移动、复制等一次性云端变更操作。
+
+    这些操作虽然看起来只是按钮点击，但真实 API 仍然需要网络往返。
+    抽成通用 worker 可以避免每个按钮重复写线程和异常处理代码。
+    """
 
     finished_ok = Signal()
     failed = Signal(str)
@@ -80,7 +93,11 @@ class ActionWorker(QThread):
 
 
 class UploadWorker(QThread):
-    """上传用户选择的本地文件，避免阻塞 UI 事件循环。"""
+    """上传用户选择的本地文件，避免阻塞 UI 事件循环。
+
+    上传可能包含本地读文件、初始化上传、对象存储传输和完成确认几个阶段。
+    进度通过 Signal 回传给页面，页面只负责显示百分比。
+    """
 
     finished_ok = Signal()
     progress = Signal(int)
@@ -95,6 +112,8 @@ class UploadWorker(QThread):
 
     def run(self) -> None:
         try:
+            # current_parent_id 优先，因为爱数接口更稳定地接受 docid/gns 这类目录标识；
+            # 如果只有路径，则先查询路径对应的目录对象。
             current = self.client.get_item_by_path(self.current_path) if self.current_path != "/" and not self.current_parent_id else None
             remote_id = self.current_parent_id or (current.id if current else "root")
             self.client.upload_file(self.local_path, remote_id, progress_cb=self._progress)
@@ -107,7 +126,11 @@ class UploadWorker(QThread):
 
 
 class DownloadWorker(QThread):
-    """下载云端文件，避免阻塞 UI 事件循环。"""
+    """下载云端文件，避免阻塞 UI 事件循环。
+
+    下载通常先向业务 API 请求临时下载地址，再从对象存储读取字节流。
+    这类流式 I/O 不应该在主线程里执行。
+    """
 
     finished_ok = Signal()
     progress = Signal(int)
@@ -191,6 +214,8 @@ class CloudFilesPage(QWidget):
         self.breadcrumb.setText(self.current_path)
         request_hint = f"{self.current_path}" + (f" | id={self.current_parent_id}" if self.current_parent_id else "")
         self.status.setText(f"加载中... {request_hint}")
+        # previous_state 用于导航失败时回滚面包屑和当前目录，
+        # 避免用户双击一个不可访问目录后页面停留在错误路径。
         worker = ListDirWorker(self.client, self.current_path, self.current_parent_id, previous_state)
         worker.loaded.connect(lambda items, current=worker: self._items_loaded(items, current))
         worker.failed.connect(lambda msg, current=worker: self._load_failed(msg, current))
@@ -236,6 +261,7 @@ class CloudFilesPage(QWidget):
         self.worker = worker
         self._workers.append(worker)
         # 保留引用直到线程结束，避免 Python 垃圾回收提前回收仍在运行的 QThread。
+        # 这是 PySide 常见坑：如果 QThread 没有 Python 侧引用，可能出现线程运行中对象被销毁。
         worker.finished.connect(lambda current=worker: self._worker_finished(current))
         worker.start()
 
@@ -380,12 +406,18 @@ class CloudFilesPage(QWidget):
 
     def _directory_target(self, item: CloudItem) -> tuple[str | None, str | None]:
         raw = item.raw or {}
+        # 不同 RESTful API 返回的目录字段名不完全一致。
+        # 这里同时兼容 docid、docId、gns、itemId、path 等字段，保证公共文档库也能进入。
         target_id = item.id or self._first_raw_str(raw, "docid", "docId", "doc_id", "gns", "itemId", "id")
         target_path = item.path or self._first_raw_str(raw, "path", "fullPath", "full_path", "itemPath", "item_path", "docid", "docId", "doc_id", "gns")
         fallback_path = f"{self.current_path.rstrip('/')}/{item.name}" if self.current_path != "/" else f"/{item.name}"
         if target_path == self.current_path and target_id and target_id != self.current_parent_id:
+            # 有些接口把 path 回成父目录，但 id 已经是子目录 id；
+            # 此时优先用 id 继续请求，否则会反复加载当前目录。
             target_path = target_id
         elif item.name and target_path in (None, "", self.current_path) and target_id in (None, "", self.current_parent_id):
+            # 如果后端没有给可用路径或 id，就退化为根据当前路径拼接目录名。
+            # 这不是最理想，但比直接无法导航更友好。
             target_path = fallback_path
             target_id = target_path
         elif target_path and not target_id:
