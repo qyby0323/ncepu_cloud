@@ -6,11 +6,13 @@ from typing import Callable
 from ncepu_cloud_client.api.base import CloudDriveClient
 from ncepu_cloud_client.api.models import CloudItem
 from ncepu_cloud_client.ui.components.file_table import FileTable
+from ncepu_cloud_client.utils.file_utils import human_size
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -163,52 +165,131 @@ class CloudFilesPage(QWidget):
         self._workers: list[QThread] = []
         self.worker: QThread | None = None
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(14)
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
         title = QLabel("云端文件")
         title.setObjectName("PageTitle")
+        subtitle = QLabel("浏览、搜索和管理华电云盘中的文件。")
+        subtitle.setObjectName("MutedText")
         self.status = QLabel("就绪")
         self.status.setObjectName("MutedText")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box, 1)
+        header.addWidget(self.status)
+
         path_row = QHBoxLayout()
         action_row = QHBoxLayout()
+        path_row.setSpacing(10)
+        action_row.setSpacing(8)
         self.breadcrumb = QLabel("/")
         self.breadcrumb.setObjectName("MutedText")
         self.breadcrumb.setMinimumWidth(180)
         self.search = QLineEdit()
+        self.search.setObjectName("TopSearch")
         self.search.setPlaceholderText("搜索文件名")
         self.search.returnPressed.connect(self.do_search)
-        buttons = [
-            ("刷新", self.refresh),
-            ("打开", self.open_selected),
-            ("返回上级", self.go_parent),
-            ("新建文件夹", self.mkdir),
-            ("上传文件", self.upload_file),
-            ("下载", self.download_selected),
-            ("删除", self.delete_selected),
-            ("重命名", self.rename_selected),
-            ("移动", self.move_selected),
-            ("复制", self.copy_selected),
-        ]
         path_row.addWidget(self.breadcrumb)
         path_row.addWidget(self.search, 1)
         search_button = QPushButton("搜索")
         search_button.clicked.connect(self.do_search)
         path_row.addWidget(search_button)
-        for text, slot in buttons:
+
+        primary_actions = [
+            ("返回上级", self.go_parent, "GhostButton"),
+            ("刷新", self.refresh, "GhostButton"),
+            ("新建文件夹", self.mkdir, ""),
+            ("上传文件", self.upload_file, "PrimaryButton"),
+            ("下载", self.download_selected, ""),
+            ("重命名", self.rename_selected, ""),
+        ]
+        for text, slot, object_name in primary_actions:
             button = QPushButton(text)
             button.clicked.connect(slot)
-            if text == "上传文件":
-                button.setObjectName("PrimaryButton")
+            if object_name:
+                button.setObjectName(object_name)
             action_row.addWidget(button)
+        more = QPushButton("更多")
+        more_menu = QMenu(more)
+        for text, slot in [
+            ("打开", self.open_selected),
+            ("移动", self.move_selected),
+            ("复制", self.copy_selected),
+            ("删除", self.delete_selected),
+        ]:
+            action = more_menu.addAction(text)
+            action.triggered.connect(lambda checked=False, s=slot: s())
+        more.setMenu(more_menu)
+        action_row.addWidget(more)
         action_row.addStretch(1)
         self.table = FileTable()
         self.table.cellDoubleClicked.connect(self._double_clicked)
+        self.table.itemSelectionChanged.connect(self._update_details)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
-        root.addWidget(title)
-        root.addWidget(self.status)
+        details = self._build_details_panel()
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        body.addWidget(self.table, 1)
+        body.addWidget(details)
+        root.addLayout(header)
         root.addLayout(path_row)
         root.addLayout(action_row)
-        root.addWidget(self.table, 1)
+        root.addLayout(body, 1)
         self.refresh()
+
+    def _build_details_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("Surface")
+        panel.setFixedWidth(270)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(10)
+        title = QLabel("文件详情")
+        title.setObjectName("SectionTitle")
+        self.detail_name = QLabel("未选择文件")
+        self.detail_name.setObjectName("MetricValue")
+        self.detail_type = QLabel("请选择列表中的文件或文件夹。")
+        self.detail_type.setObjectName("MutedText")
+        self.detail_size = QLabel("")
+        self.detail_size.setObjectName("MutedText")
+        self.detail_path = QLabel("")
+        self.detail_path.setObjectName("MutedText")
+        self.detail_status = QLabel("状态：-")
+        self.detail_status.setObjectName("SuccessText")
+        download = QPushButton("下载到本地")
+        download.clicked.connect(self.download_selected)
+        copy_path = QPushButton("复制路径")
+        copy_path.setObjectName("GhostButton")
+        copy_path.clicked.connect(lambda: QApplication.clipboard().setText((self.table.selected_item().path or self.table.selected_item().name) if self.table.selected_item() else ""))
+        layout.addWidget(title)
+        layout.addWidget(self.detail_name)
+        layout.addWidget(self.detail_type)
+        layout.addWidget(self.detail_size)
+        layout.addWidget(self.detail_path)
+        layout.addWidget(self.detail_status)
+        layout.addSpacing(8)
+        layout.addWidget(download)
+        layout.addWidget(copy_path)
+        layout.addStretch(1)
+        return panel
+
+    def _update_details(self) -> None:
+        item = self.table.selected_item()
+        if not item:
+            self.detail_name.setText("未选择文件")
+            self.detail_type.setText("请选择列表中的文件或文件夹。")
+            self.detail_size.setText("")
+            self.detail_path.setText("")
+            self.detail_status.setText("状态：-")
+            return
+        self.detail_name.setText(item.name)
+        self.detail_type.setText("文件夹" if item.is_dir else "文件")
+        self.detail_size.setText("大小：-" if item.is_dir else f"大小：{human_size(item.size)}")
+        self.detail_path.setText(f"路径：{item.path or self.current_path}")
+        self.detail_status.setText("状态：云端文件" if item.is_dir else "状态：已同步")
 
     def refresh(self, previous_state: tuple[str, str | None] | None = None) -> None:
         self.breadcrumb.setText(self.current_path)
@@ -226,6 +307,7 @@ class CloudFilesPage(QWidget):
             # 忽略旧请求的过期结果，避免较晚返回的旧导航覆盖当前页面。
             return
         self.table.set_items(items)
+        self._update_details()
         self.status.setText(f"就绪，共 {len(items)} 项")
 
     def _load_failed(self, msg: str, worker: ListDirWorker | None = None) -> None:
@@ -288,6 +370,7 @@ class CloudFilesPage(QWidget):
             # 搜索和目录导航共用当前 worker 保护，防止旧结果覆盖新结果。
             return
         self.table.set_items(items)
+        self._update_details()
         self.status.setText(f"搜索完成：{keyword}，共 {len(items)} 项")
 
     def _search_failed(self, msg: str, worker: SearchWorker | None = None) -> None:

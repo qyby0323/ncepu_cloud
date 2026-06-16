@@ -4,7 +4,7 @@ from ncepu_cloud_client.api.models import CloudItem
 from ncepu_cloud_client.utils.file_utils import human_size
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem
 
 
 class FileTable(QTableWidget):
@@ -15,7 +15,11 @@ class FileTable(QTableWidget):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setAlternatingRowColors(False)
-        self.horizontalHeader().setStretchLastSection(True)
+        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for section in range(1, 5):
+            self.horizontalHeader().setSectionResizeMode(section, QHeaderView.ResizeToContents)
+        self.setShowGrid(False)
+        self.setWordWrap(False)
         self.items: list[CloudItem] = []
 
     def set_items(self, items: list[CloudItem]) -> None:
@@ -23,7 +27,8 @@ class FileTable(QTableWidget):
         self.setRowCount(len(items))
         for row, item in enumerate(items):
             type_text = "文件夹" if item.is_dir else "文件"
-            values = [item.name, type_text, human_size(item.size), item.modified_at or "-", "正常"]
+            status = "云端文件" if item.is_dir else "已同步"
+            values = [item.name, type_text, human_size(item.size), item.modified_at or "-", status]
             for col, value in enumerate(values):
                 cell = QTableWidgetItem(value)
                 if col == 0:

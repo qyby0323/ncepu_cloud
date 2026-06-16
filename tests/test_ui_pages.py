@@ -18,7 +18,15 @@ class FakeUiClient:
         self.search_calls = []
 
     def list_dir(self, remote_path=None, parent_id=None):
-        return []
+        return [
+            CloudItem(
+                id="root-doc",
+                name="真实云端文件.docx",
+                type=CloudItemType.FILE,
+                size=2048,
+                modified_at="2026-06-16 10:00",
+            )
+        ]
 
     def search(self, keyword):
         self.search_calls.append(keyword)
@@ -148,7 +156,11 @@ def test_login_window_rejects_invalid_auto_token(qapp, monkeypatch):
 
 
 def test_cloud_files_page_builds_and_loads_empty_root(qapp):
-    page = CloudFilesPage(FakeUiClient())
+    class EmptyClient(FakeUiClient):
+        def list_dir(self, remote_path=None, parent_id=None):
+            return []
+
+    page = CloudFilesPage(EmptyClient())
     wait_until(qapp, lambda: not page.worker.isRunning())
     assert page.table.rowCount() == 0
     page.deleteLater()
@@ -159,8 +171,9 @@ def test_main_window_topbar_search_and_account_menu(qapp):
     window = MainWindow(Settings(), client)
     wait_until(qapp, lambda: not window.cloud_files_page.worker.isRunning())
     wait_until(qapp, lambda: not window.pages[0].worker.isRunning())
+    wait_until(qapp, lambda: not window.pages[0].recent_worker.isRunning())
 
-    assert window.top_search.placeholderText() == "欢迎使用华电网盘，点击此处开始搜索"
+    assert window.top_search.placeholderText() == "搜索文件或同步任务"
     buttons = {button.text(): button for button in window.findChildren(QPushButton)}
     assert "会员中心" not in buttons
     assert "已登录" in buttons
@@ -208,18 +221,22 @@ def test_dashboard_metrics_read_sync_database(qapp, tmp_path):
 
     page = DashboardPage(FakeUiClient(), database=db)
     wait_until(qapp, lambda: not page.worker.isRunning())
+    wait_until(qapp, lambda: not page.recent_worker.isRunning())
     page.refresh_metrics()
 
-    assert page.sync_card.value.text() == "1"
+    assert page.sync_card.value.text() == "暂无待处理"
+    assert "2 个传输任务进行中" in page.sync_card.note.text()
     assert page.upload_card.value.text() == "1"
     assert page.download_card.value.text() == "1"
     assert page.error_card.value.text() == "网络超时"
+    assert page.pending_label.text() == "暂无待处理事项"
     page.deleteLater()
 
 
 def test_dashboard_shortcut_buttons_emit_signals(qapp, tmp_path):
     page = DashboardPage(FakeUiClient(), database=SyncDatabase(tmp_path / "state.db"))
     wait_until(qapp, lambda: not page.worker.isRunning())
+    wait_until(qapp, lambda: not page.recent_worker.isRunning())
     buttons = {button.text(): button for button in page.findChildren(QPushButton)}
     emitted: list[str] = []
     page.open_cloud_requested.connect(lambda: emitted.append("cloud"))
