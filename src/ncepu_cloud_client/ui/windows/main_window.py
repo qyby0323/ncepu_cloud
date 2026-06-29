@@ -105,14 +105,6 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
             self.nav_buttons.append(button)
 
-        layout.addSpacing(14)
-        section = QLabel("文档库")
-        section.setObjectName("SidebarSection")
-        layout.addWidget(section)
-        for index, text in enumerate(["我的文档库", "共享文档库", "课程资料", "最近访问"]):
-            item = QLabel(text)
-            item.setObjectName("LibraryItemSelected" if index == 0 else "LibraryItem")
-            layout.addWidget(item)
         layout.addStretch(1)
         status = QLabel("真实 API · 已连接")
         status.setObjectName("SidebarCaption")
