@@ -8,9 +8,10 @@ from ncepu_cloud_client.sync.database import SyncDatabase
 from ncepu_cloud_client.ui.pages.dashboard_page import DashboardPage
 from ncepu_cloud_client.ui.pages.cloud_files_page import CloudFilesPage
 from ncepu_cloud_client.ui.pages.settings_page import SettingsPage
+from ncepu_cloud_client.ui.pages.sync_tasks_page import SyncTasksPage
 from ncepu_cloud_client.ui.windows.login_window import LoginSettingsDialog, LoginWindow
 from ncepu_cloud_client.ui.windows.main_window import MainWindow
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 
 class FakeUiClient:
@@ -83,8 +84,72 @@ def wait_until(app: QApplication, predicate, timeout_ms: int = 1000) -> None:
 
 def test_settings_page_builds_with_scroll_area(qapp):
     page = SettingsPage(Settings())
-    assert page.custom_ignore_rules.placeholderText()
+    assert not hasattr(page, "custom_ignore_rules")
     assert page.oauth_extra_params.placeholderText()
+    page.deleteLater()
+
+
+def test_sync_tasks_page_saves_task_level_ignore_rules_and_deletes(qapp, monkeypatch, tmp_path):
+    class FakeDatabase:
+        def __init__(self):
+            self.tasks = []
+
+        def list_sync_tasks(self):
+            return list(self.tasks)
+
+    class FakeSyncService:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.database = FakeDatabase()
+            self.added_ignore_rules = None
+            self.deleted_task_ids = []
+            self.instances.append(self)
+
+        def add_task(self, **kwargs):
+            self.added_ignore_rules = kwargs["ignore_rules"]
+            self.database.tasks = [
+                {
+                    "id": 7,
+                    "name": kwargs["name"],
+                    "local_root": str(kwargs["local_root"]),
+                    "remote_root_id": kwargs["remote_root_id"],
+                    "remote_root_path": kwargs["remote_root_path"],
+                    "direction": kwargs["direction"].value,
+                    "delete_sync_enabled": int(kwargs["delete_sync_enabled"]),
+                    "encryption_enabled": int(kwargs["encryption_enabled"]),
+                    "ignore_rules": kwargs["ignore_rules"],
+                }
+            ]
+            return 7
+
+        def delete_task(self, task_id):
+            self.deleted_task_ids.append(task_id)
+            self.database.tasks = []
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr("ncepu_cloud_client.ui.pages.sync_tasks_page.SyncService", FakeSyncService)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    page = SyncTasksPage(FakeUiClient(), Settings())
+
+    page.local_input.setText(str(tmp_path / "sync"))
+    page.remote_input.setText("gns://personal/root")
+    page.ignore_rules.setPlainText("build/\n*.bak")
+    page.add_task()
+
+    service = FakeSyncService.instances[-1]
+    assert service.added_ignore_rules == "build/\n*.bak"
+    assert "当前任务过滤规则" in page.ignore_rules.placeholderText()
+
+    page.delete_task(7)
+
+    assert service.deleted_task_ids == [7]
     page.deleteLater()
 
 

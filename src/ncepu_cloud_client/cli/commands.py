@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     sync_add = sub.add_parser("sync-add")
     sync_add.add_argument("local_dir")
     sync_add.add_argument("remote_dir", nargs="?", default="root")
+    sync_add.add_argument("--ignore-rule", action="append", default=[], help="当前同步任务的过滤规则，可重复传入。")
     sub.add_parser("sync-start")
     args = parser.parse_args(argv)
 
@@ -141,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
                 remote_root_id=args.remote_dir,
                 remote_root_path=args.remote_dir,
                 direction=SyncDirection.BIDIRECTIONAL,
+                ignore_rules="\n".join(args.ignore_rule),
             )
             print(f"同步任务已创建: {task_id}")
         elif args.command == "sync-start":

@@ -27,3 +27,21 @@ class SyncQueue:
 
     def empty(self) -> bool:
         return self._queue.empty()
+
+    def discard_for_task(self, sync_task_id: int) -> None:
+        """丢弃指定同步任务还没开始执行的队列项。
+
+        删除任务时，数据库记录会先被移除，但队列里可能还残留该任务的上传/下载请求。
+        这里把队列临时取空，再只放回其他任务，避免已删除任务继续被 worker 执行。
+        """
+        kept: list[SyncJob] = []
+        while True:
+            try:
+                job = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if job.sync_task_id != sync_task_id:
+                kept.append(job)
+            self._queue.task_done()
+        for job in kept:
+            self._queue.put(job)

@@ -13,8 +13,7 @@ class SyncService:
     def __init__(self, client: CloudDriveClient, database: SyncDatabase | None = None, settings: Settings | None = None):
         self.database = database or SyncDatabase()
         max_workers = settings.sync.max_workers if settings else 4
-        extra_rules = self._split_ignore_rules(settings.sync.custom_ignore_rules) if settings else []
-        self.engine = SyncEngine(client, self.database, max_workers=max_workers, extra_ignore_rules=extra_rules)
+        self.engine = SyncEngine(client, self.database, max_workers=max_workers)
 
     def add_task(
         self,
@@ -25,6 +24,7 @@ class SyncService:
         direction: SyncDirection = SyncDirection.BIDIRECTIONAL,
         delete_sync_enabled: bool = False,
         encryption_enabled: bool = False,
+        ignore_rules: str = "",
     ) -> int:
         task_id = self.database.add_sync_task(
             name=name,
@@ -34,6 +34,7 @@ class SyncService:
             direction=direction.value,
             delete_sync_enabled=delete_sync_enabled,
             encryption_enabled=encryption_enabled,
+            ignore_rules=ignore_rules,
         )
         for task in self.database.list_sync_tasks():
             if task["id"] == task_id:
@@ -41,12 +42,17 @@ class SyncService:
                 break
         return task_id
 
+    def delete_task(self, task_id: int) -> None:
+        was_running = self.engine.is_running
+        if was_running:
+            self.engine.stop()
+        self.engine.queue.discard_for_task(task_id)
+        self.database.delete_sync_task(task_id)
+        if was_running:
+            self.engine.start()
+
     def start(self) -> None:
         self.engine.start()
 
     def stop(self) -> None:
         self.engine.stop()
-
-    @staticmethod
-    def _split_ignore_rules(rules: str) -> list[str]:
-        return [line.strip() for line in rules.splitlines() if line.strip() and not line.strip().startswith("#")]

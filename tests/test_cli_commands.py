@@ -109,3 +109,23 @@ def test_cli_upload_resolves_remote_path(monkeypatch, capsys, tmp_path):
 
     assert client.uploaded == [(local, "resolved-id")]
     assert "上传完成" in capsys.readouterr().out
+
+
+def test_cli_sync_add_accepts_task_ignore_rules(monkeypatch, capsys, tmp_path):
+    install_fake_bootstrap(monkeypatch)
+    captured = {}
+
+    class FakeSyncService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_task(self, **kwargs):
+            captured.update(kwargs)
+            return 9
+
+    monkeypatch.setattr(commands, "SyncService", FakeSyncService)
+
+    assert commands.main(["sync-add", str(tmp_path), "gns://root", "--ignore-rule", "build/", "--ignore-rule", "*.bak"]) == 0
+
+    assert captured["ignore_rules"] == "build/\n*.bak"
+    assert "同步任务已创建: 9" in capsys.readouterr().out

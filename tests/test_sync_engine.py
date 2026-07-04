@@ -59,8 +59,9 @@ def test_remote_scan_enqueues_downloads_and_applies_filter(tmp_path):
         remote_root_id="root",
         remote_root_path="/",
         direction=SyncDirection.REMOTE_TO_LOCAL.value,
+        ignore_rules="*.secret",
     )
-    engine = SyncEngine(FakeRemoteClient(), db, extra_ignore_rules=["*.secret"])
+    engine = SyncEngine(FakeRemoteClient(), db)
 
     engine._enqueue_remote_tree(db.list_sync_tasks()[0])
 
@@ -110,8 +111,9 @@ def test_local_scan_enqueues_existing_files_for_upload(tmp_path):
         remote_root_id="gns://remote/root",
         remote_root_path="gns://remote/root",
         direction=SyncDirection.LOCAL_TO_REMOTE.value,
+        ignore_rules="*.tmp",
     )
-    engine = SyncEngine(FakeRemoteClient(), db, extra_ignore_rules=["*.tmp"])
+    engine = SyncEngine(FakeRemoteClient(), db)
 
     engine._enqueue_local_tree(db.list_sync_tasks()[0])
 

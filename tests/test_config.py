@@ -12,11 +12,10 @@ def test_config_can_create_save_and_load(tmp_path):
     assert loaded.api.auth_url == "https://pan.ncepu.edu.cn"
     loaded.app.mode = "mock"
     loaded.api.extra_oauth_params = {"tenant": "ncepu", "prompt": "none"}
-    loaded.sync.custom_ignore_rules = "build/\n*.bak"
     manager.save(loaded)
     assert manager.load().app.mode == "mock"
     assert manager.load().api.extra_oauth_params == {"tenant": "ncepu", "prompt": "none"}
-    assert manager.load().sync.custom_ignore_rules == "build/\n*.bak"
+    assert "custom_ignore_rules" not in path.read_text(encoding="utf-8")
 
 
 def test_config_migrates_legacy_cloud_domain_to_pan(tmp_path):

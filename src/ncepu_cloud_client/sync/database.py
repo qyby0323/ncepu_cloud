@@ -47,6 +47,7 @@ class SyncDatabase:
                   enabled INTEGER NOT NULL DEFAULT 1,
                   delete_sync_enabled INTEGER NOT NULL DEFAULT 0,
                   encryption_enabled INTEGER NOT NULL DEFAULT 0,
+                  ignore_rules TEXT NOT NULL DEFAULT '',
                   created_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL
                 );
@@ -82,6 +83,18 @@ class SyncDatabase:
                 );
                 """
             )
+            self._ensure_sync_task_columns(conn)
+
+    @staticmethod
+    def _ensure_sync_task_columns(conn: sqlite3.Connection) -> None:
+        """为已经存在的旧状态库补齐新字段。
+
+        SQLite 的 CREATE TABLE IF NOT EXISTS 不会修改旧表结构，因此新增任务级配置时，
+        需要显式检查列是否存在。这样用户升级程序后可以继续使用原来的同步数据库。
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sync_tasks)")}
+        if "ignore_rules" not in columns:
+            conn.execute("ALTER TABLE sync_tasks ADD COLUMN ignore_rules TEXT NOT NULL DEFAULT ''")
 
     def add_sync_task(
         self,
@@ -92,16 +105,17 @@ class SyncDatabase:
         direction: str,
         delete_sync_enabled: bool = False,
         encryption_enabled: bool = False,
+        ignore_rules: str = "",
     ) -> int:
         now = utc_now_iso()
         with self.connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO sync_tasks
-                (name, local_root, remote_root_id, remote_root_path, direction, delete_sync_enabled, encryption_enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (name, local_root, remote_root_id, remote_root_path, direction, delete_sync_enabled, encryption_enabled, ignore_rules, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, local_root, remote_root_id, remote_root_path, direction, int(delete_sync_enabled), int(encryption_enabled), now, now),
+                (name, local_root, remote_root_id, remote_root_path, direction, int(delete_sync_enabled), int(encryption_enabled), ignore_rules, now, now),
             )
             return int(cur.lastrowid)
 
@@ -122,6 +136,7 @@ class SyncDatabase:
         delete_sync_enabled: bool | None = None,
         encryption_enabled: bool | None = None,
         direction: str | None = None,
+        ignore_rules: str | None = None,
     ) -> None:
         fields: list[str] = []
         values: list[Any] = []
@@ -136,6 +151,9 @@ class SyncDatabase:
         if direction is not None:
             fields.append("direction=?")
             values.append(direction)
+        if ignore_rules is not None:
+            fields.append("ignore_rules=?")
+            values.append(ignore_rules)
         if not fields:
             return
         fields.append("updated_at=?")
@@ -143,6 +161,17 @@ class SyncDatabase:
         values.append(task_id)
         with self.connect() as conn:
             conn.execute(f"UPDATE sync_tasks SET {','.join(fields)} WHERE id=?", values)
+
+    def delete_sync_task(self, task_id: int) -> None:
+        """删除同步任务以及它产生的本地状态记录。
+
+        删除任务只移除客户端自己的任务配置、文件映射和传输历史，不会删除用户本地文件，
+        也不会删除云端文件。这样用户可以安全地停止某个目录的同步关系。
+        """
+        with self.connect() as conn:
+            conn.execute("DELETE FROM transfer_records WHERE sync_task_id=?", (task_id,))
+            conn.execute("DELETE FROM sync_items WHERE sync_task_id=?", (task_id,))
+            conn.execute("DELETE FROM sync_tasks WHERE id=?", (task_id,))
 
     def upsert_sync_item(self, sync_task_id: int, local_path: str, **values: Any) -> None:
         now = utc_now_iso()

@@ -23,10 +23,9 @@ class SyncEngine:
     SyncWorkerPool 负责真正执行上传、下载和删除。
     """
 
-    def __init__(self, client: CloudDriveClient, database: SyncDatabase, max_workers: int = 4, extra_ignore_rules: list[str] | None = None):
+    def __init__(self, client: CloudDriveClient, database: SyncDatabase, max_workers: int = 4):
         self.client = client
         self.database = database
-        self.extra_ignore_rules = extra_ignore_rules or []
         self.queue = SyncQueue()
         self.watcher = LocalWatcher()
         self.workers = SyncWorkerPool(client, database, self.queue, max_workers=max_workers)
@@ -35,6 +34,10 @@ class SyncEngine:
         # 这样 stop() 不需要强制杀线程，也不会打断正在进行的文件/数据库操作。
         self._scan_stop = threading.Event()
         self._scan_threads: list[threading.Thread] = []
+
+    @property
+    def is_running(self) -> bool:
+        return self._started
 
     def start(self) -> None:
         if self._started:
@@ -85,7 +88,7 @@ class SyncEngine:
                 task["remote_root_id"],
                 self.queue,
                 delete_sync_enabled=bool(task["delete_sync_enabled"]),
-                extra_ignore_rules=self.extra_ignore_rules,
+                task_ignore_rules=self._task_ignore_rules(task),
             )
             # watchdog 只能看到启动后的增量事件，所以启动时还要做一次本地全量扫描。
             self._enqueue_local_tree(task)
@@ -105,7 +108,7 @@ class SyncEngine:
 
     def _enqueue_local_tree(self, task: dict) -> None:
         local_root = Path(task["local_root"])
-        ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=self.extra_ignore_rules)
+        ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=self._task_ignore_rules(task))
         # 初始全量遍历用于覆盖 watchdog 开始监听之前就已经存在的文件。
         # 这里不直接上传，而是把任务放入队列，让 worker 线程池统一限流处理。
         for path in local_root.rglob("*"):
@@ -127,7 +130,7 @@ class SyncEngine:
         local_root = Path(task["local_root"])
         try:
             local_root.mkdir(parents=True, exist_ok=True)
-            ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=self.extra_ignore_rules)
+            ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=self._task_ignore_rules(task))
             # UI 中的远端根目录可能是 "/", "root" 或真实 gns:// id。扫描前统一解析，
             # 后续递归才能使用服务端真正接受的目录标识。
             remote_id, remote_path = self._resolve_remote_root(task["remote_root_id"], task.get("remote_root_path") or None)
@@ -202,6 +205,13 @@ class SyncEngine:
         except Exception as exc:
             logger.warning("default remote root resolution failed, using configured root: %s", exc)
         return remote_id, remote_path
+
+    @staticmethod
+    def _task_ignore_rules(task: dict) -> list[str]:
+        # 过滤规则属于单个同步任务：同一客户端里可能既有源码目录，也有资料目录，
+        # 它们需要忽略的文件类型并不相同。按任务读取可以避免全局规则误伤其他目录。
+        raw = task.get("ignore_rules") or ""
+        return [line.strip() for line in raw.splitlines() if line.strip() and not line.strip().startswith("#")]
 
     @staticmethod
     def _safe_local_name(name: str) -> str:

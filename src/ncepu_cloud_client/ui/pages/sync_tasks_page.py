@@ -8,7 +8,7 @@ from ncepu_cloud_client.services.sync_service import SyncService
 from ncepu_cloud_client.sync.models import SyncDirection
 from ncepu_cloud_client.ui.components.sync_task_card import SyncTaskCard
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QTextEdit, QVBoxLayout, QWidget
 
 
 class SyncTasksPage(QWidget):
@@ -47,6 +47,9 @@ class SyncTasksPage(QWidget):
         self.direction.addItem("云端到本地", SyncDirection.REMOTE_TO_LOCAL.value)
         self.delete_sync = QCheckBox("同步删除")
         self.encrypt_sync = QCheckBox("加密上传")
+        self.ignore_rules = QTextEdit()
+        self.ignore_rules.setPlaceholderText("当前任务过滤规则，每行一条，例如 build/、*.bak、cache/**")
+        self.ignore_rules.setFixedHeight(72)
         browse = QPushButton("选择目录")
         add = QPushButton("添加任务")
         add.setObjectName("PrimaryButton")
@@ -66,6 +69,7 @@ class SyncTasksPage(QWidget):
         safe_row.addStretch(1)
         form_panel_layout.addWidget(form_title)
         form_panel_layout.addLayout(form)
+        form_panel_layout.addWidget(self.ignore_rules)
         form_panel_layout.addLayout(safe_row)
 
         task_panel = QFrame()
@@ -145,6 +149,7 @@ class SyncTasksPage(QWidget):
             direction=SyncDirection(self.direction.currentData()),
             delete_sync_enabled=self.delete_sync.isChecked(),
             encryption_enabled=self.encrypt_sync.isChecked(),
+            ignore_rules=self.ignore_rules.toPlainText().strip(),
         )
         QMessageBox.information(self, "任务已添加", f"同步任务 #{task_id} 已创建。")
         self.refresh()
@@ -156,7 +161,16 @@ class SyncTasksPage(QWidget):
             if widget:
                 widget.deleteLater()
         for task in self.service.database.list_sync_tasks():
-            self.list_layout.addWidget(SyncTaskCard(task["name"], task["local_root"], task["remote_root_path"], task["direction"]))
+            card = SyncTaskCard(
+                task["id"],
+                task["name"],
+                task["local_root"],
+                task["remote_root_path"],
+                task["direction"],
+                task.get("ignore_rules") or "",
+            )
+            card.delete_requested.connect(self.delete_task)
+            self.list_layout.addWidget(card)
         if self.list_layout.count() == 0:
             empty = QLabel("暂无同步任务。添加任务后会在这里显示状态。")
             empty.setObjectName("MutedText")
@@ -176,3 +190,13 @@ class SyncTasksPage(QWidget):
             QMessageBox.information(self, "同步已暂停", "已停止监听本地目录。")
         except Exception as exc:
             QMessageBox.warning(self, "同步暂停失败", str(exc))
+
+    def delete_task(self, task_id: int) -> None:
+        if QMessageBox.question(self, "确认删除", f"删除同步任务 #{task_id}？本地文件和云端文件不会被删除。") != QMessageBox.Yes:
+            return
+        try:
+            self.service.delete_task(task_id)
+            self.refresh()
+            QMessageBox.information(self, "任务已删除", f"同步任务 #{task_id} 已删除。")
+        except Exception as exc:
+            QMessageBox.warning(self, "删除失败", str(exc))

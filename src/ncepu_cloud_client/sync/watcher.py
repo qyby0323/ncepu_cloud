@@ -111,13 +111,13 @@ class LocalWatcher:
         remote_dir_id: str,
         queue: SyncQueue,
         delete_sync_enabled: bool = False,
-        extra_ignore_rules: list[str] | None = None,
+        task_ignore_rules: list[str] | None = None,
     ) -> None:
         if self._observer is None:
             raise RuntimeError("watchdog 未安装，请执行 pip install watchdog")
         # .syncignore 是每个同步目录自己的过滤规则；
-        # extra_ignore_rules 是设置页或配置文件传入的全局补充规则。
-        ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=extra_ignore_rules)
+        # task_ignore_rules 是当前同步任务单独保存的规则，避免一个任务的过滤策略影响其他任务。
+        ignore = SyncIgnore.from_file(local_root / ".syncignore", extra_rules=task_ignore_rules)
         handler = DebouncedLocalHandler(sync_task_id, remote_dir_id, queue, local_root, ignore, delete_sync_enabled=delete_sync_enabled)
         self._observer.schedule(handler, str(local_root), recursive=True)
 

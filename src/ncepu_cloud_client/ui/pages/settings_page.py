@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QScrollArea,
     QSpinBox,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -95,10 +94,6 @@ class SettingsPage(QWidget):
         self.delete_sync.setChecked(settings.sync.enable_delete_sync)
         self.encrypt = QCheckBox()
         self.encrypt.setChecked(settings.sync.enable_encryption)
-        self.custom_ignore_rules = QTextEdit()
-        self.custom_ignore_rules.setPlainText(settings.sync.custom_ignore_rules)
-        self.custom_ignore_rules.setPlaceholderText("每行一条规则，例如 build/、*.bak、cache/**")
-        self.custom_ignore_rules.setFixedHeight(96)
         self.encryption_passphrase = QLineEdit()
         self.encryption_passphrase.setEchoMode(QLineEdit.Password)
         self.encryption_passphrase.setPlaceholderText("留空表示不修改 keyring 中的口令")
@@ -123,7 +118,6 @@ class SettingsPage(QWidget):
             ("最大并发", self.max_workers),
             ("启用删除同步", self.delete_sync),
             ("启用加密上传", self.encrypt),
-            ("自定义过滤规则", self.custom_ignore_rules),
             ("加密口令", self.encryption_passphrase),
         ]:
             form.addRow(label, widget)
@@ -187,7 +181,6 @@ class SettingsPage(QWidget):
         self.settings.sync.max_workers = self.max_workers.value()
         self.settings.sync.enable_delete_sync = self.delete_sync.isChecked()
         self.settings.sync.enable_encryption = self.encrypt.isChecked()
-        self.settings.sync.custom_ignore_rules = self.custom_ignore_rules.toPlainText().strip()
         self.manager.save(self.settings)
         if self.encryption_passphrase.text():
             try:

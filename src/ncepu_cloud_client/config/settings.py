@@ -42,7 +42,6 @@ class SyncSettings:
     default_conflict_policy: str = "keep_both"
     enable_delete_sync: bool = False
     enable_encryption: bool = False
-    custom_ignore_rules: str = ""
 
 
 @dataclass
